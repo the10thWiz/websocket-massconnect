@@ -49,7 +49,8 @@ fn main() {
     let http = opts.http;
 
     let mut avg_times = [0; 7];
-    for _ in 0..opts.num {
+    for run in 0..opts.num {
+        let start = Instant::now();
         let (tx, rx) = mpsc::channel();
 
         let num = opts.max / opts.threads;
@@ -95,21 +96,23 @@ fn main() {
         }
         if !opts.stress {
             percentiles(rx, opts.max, &mut avg_times);
+            println!("Run {} of {} took: {}s", run + 1, opts.num, start.elapsed().as_secs_f64());
             std::thread::sleep(Duration::from_secs(2));
         } else {
             drop(rx);
         }
-
     }
 
-    println!("\nAverage times:");
-    println!("Min: {} ms", avg_times[0] as f64 / opts.num as f64);
-    println!("50%: {} ms", avg_times[1] as f64 / opts.num as f64);
-    println!("80%: {} ms", avg_times[2] as f64 / opts.num as f64);
-    println!("90%: {} ms", avg_times[3] as f64 / opts.num as f64);
-    println!("95%: {} ms", avg_times[4] as f64 / opts.num as f64);
-    println!("99%: {} ms", avg_times[5] as f64 / opts.num as f64);
-    println!("Max: {} ms", avg_times[6] as f64 / opts.num as f64);
+    if !opts.stress {
+        println!("\nAverage times:");
+        println!("Min: {} ms", avg_times[0] as f64 / opts.num as f64);
+        println!("50%: {} ms", avg_times[1] as f64 / opts.num as f64);
+        println!("80%: {} ms", avg_times[2] as f64 / opts.num as f64);
+        println!("90%: {} ms", avg_times[3] as f64 / opts.num as f64);
+        println!("95%: {} ms", avg_times[4] as f64 / opts.num as f64);
+        println!("99%: {} ms", avg_times[5] as f64 / opts.num as f64);
+        println!("Max: {} ms", avg_times[6] as f64 / opts.num as f64);
+    }
 }
 
 const TEXT: &'static [u8] = b"Hello";
@@ -163,9 +166,11 @@ fn percentiles(rx: mpsc::Receiver<ClientConnection>, max: usize, avg_times: &mut
             break;
         }
     }
+    if sorted_times.len() == 0 {
+        return;
+    }
     sorted_times.sort();
 
-    println!("{}/{} connections succeeded", success, max);
     // Sorted from short to long
     let p0 = sorted_times[0].as_millis();
     let p50 = percentile(&sorted_times, 0.5).as_millis();
@@ -181,6 +186,8 @@ fn percentiles(rx: mpsc::Receiver<ClientConnection>, max: usize, avg_times: &mut
     avg_times[4] += p95;
     avg_times[5] += p99;
     avg_times[6] += p100;
+
+    println!();
     println!("Min: {} ms", p0);
     println!("50%: {} ms", p50);
     println!("80%: {} ms", p80);
@@ -188,6 +195,7 @@ fn percentiles(rx: mpsc::Receiver<ClientConnection>, max: usize, avg_times: &mut
     println!("95%: {} ms", p95);
     println!("99%: {} ms", p99);
     println!("Max: {} ms", p100);
+    println!("{}/{} connections succeeded", success, max);
 }
 
 fn percentile(vec: &Vec<Duration>, percent: f64) -> Duration {
