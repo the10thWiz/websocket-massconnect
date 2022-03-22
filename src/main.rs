@@ -26,7 +26,7 @@ struct Options {
     #[structopt(short, long)]
     /// Enable Rocket-style authentication prior to connection
     auth: bool,
-    #[structopt(short, long)]
+    #[structopt(long)]
     /// Just do HTTP requests
     http: bool,
     #[structopt(short, long)]
@@ -48,6 +48,7 @@ fn main() {
     let auth = opts.auth;
     let http = opts.http;
 
+    let mut avg_times = [0; 7];
     for _ in 0..opts.num {
         let (tx, rx) = mpsc::channel();
 
@@ -93,13 +94,22 @@ fn main() {
             })));
         }
         if !opts.stress {
-            percentiles(rx, opts.max);
+            percentiles(rx, opts.max, &mut avg_times);
             std::thread::sleep(Duration::from_secs(2));
         } else {
             drop(rx);
         }
 
     }
+
+    println!("\nAverage times:");
+    println!("Min: {} ms", avg_times[0] as f64 / opts.num as f64);
+    println!("50%: {} ms", avg_times[1] as f64 / opts.num as f64);
+    println!("80%: {} ms", avg_times[2] as f64 / opts.num as f64);
+    println!("90%: {} ms", avg_times[3] as f64 / opts.num as f64);
+    println!("95%: {} ms", avg_times[4] as f64 / opts.num as f64);
+    println!("99%: {} ms", avg_times[5] as f64 / opts.num as f64);
+    println!("Max: {} ms", avg_times[6] as f64 / opts.num as f64);
 }
 
 const TEXT: &'static [u8] = b"Hello";
@@ -108,7 +118,7 @@ async fn try_connect(
     address: &str,
     auth: bool,
     http: bool,
-    client: &reqwest::Client
+    client: &reqwest::Client,
 ) -> Result<Duration> {
     let start = Instant::now();
     if http {
@@ -139,7 +149,7 @@ async fn try_connect(
     Err(Box::new(Error::new(ErrorKind::Other, "Failed")))
 }
 
-fn percentiles(rx: mpsc::Receiver<ClientConnection>, max: usize) {
+fn percentiles(rx: mpsc::Receiver<ClientConnection>, max: usize, avg_times: &mut [u128; 7]) {
     let mut sorted_times = vec![];
     let mut success = 0;
     let mut count = 0;
@@ -157,13 +167,27 @@ fn percentiles(rx: mpsc::Receiver<ClientConnection>, max: usize) {
 
     println!("{}/{} connections succeeded", success, max);
     // Sorted from short to long
-    println!("Min: {} ms", sorted_times[0].as_millis());
-    println!("50%: {} ms", percentile(&sorted_times, 0.5).as_millis());
-    println!("80%: {} ms", percentile(&sorted_times, 0.8).as_millis());
-    println!("90%: {} ms", percentile(&sorted_times, 0.9).as_millis());
-    println!("95%: {} ms", percentile(&sorted_times, 0.95).as_millis());
-    println!("99%: {} ms", percentile(&sorted_times, 0.99).as_millis());
-    println!("Max: {} ms", sorted_times[sorted_times.len() - 1].as_millis());
+    let p0 = sorted_times[0].as_millis();
+    let p50 = percentile(&sorted_times, 0.5).as_millis();
+    let p80 = percentile(&sorted_times, 0.8).as_millis();
+    let p90 = percentile(&sorted_times, 0.9).as_millis();
+    let p95 = percentile(&sorted_times, 0.95).as_millis();
+    let p99 = percentile(&sorted_times, 0.99).as_millis();
+    let p100 = sorted_times[sorted_times.len() - 1].as_millis();
+    avg_times[0] += p0;
+    avg_times[1] += p50;
+    avg_times[2] += p80;
+    avg_times[3] += p90;
+    avg_times[4] += p95;
+    avg_times[5] += p99;
+    avg_times[6] += p100;
+    println!("Min: {} ms", p0);
+    println!("50%: {} ms", p50);
+    println!("80%: {} ms", p80);
+    println!("90%: {} ms", p90);
+    println!("95%: {} ms", p95);
+    println!("99%: {} ms", p99);
+    println!("Max: {} ms", p100);
 }
 
 fn percentile(vec: &Vec<Duration>, percent: f64) -> Duration {
