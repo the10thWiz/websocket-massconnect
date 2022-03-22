@@ -94,25 +94,21 @@ fn main() {
                 time
             })));
         }
+        percentiles(rx, opts.max, &mut avg_times);
+        println!("Run {} of {} took: {}s", run + 1, opts.num, start.elapsed().as_secs_f64());
         if !opts.stress {
-            percentiles(rx, opts.max, &mut avg_times);
-            println!("Run {} of {} took: {}s", run + 1, opts.num, start.elapsed().as_secs_f64());
             std::thread::sleep(Duration::from_secs(2));
-        } else {
-            drop(rx);
         }
     }
 
-    if !opts.stress {
-        println!("\nAverage times:");
-        println!("Min: {} ms", avg_times[0] as f64 / opts.num as f64);
-        println!("50%: {} ms", avg_times[1] as f64 / opts.num as f64);
-        println!("80%: {} ms", avg_times[2] as f64 / opts.num as f64);
-        println!("90%: {} ms", avg_times[3] as f64 / opts.num as f64);
-        println!("95%: {} ms", avg_times[4] as f64 / opts.num as f64);
-        println!("99%: {} ms", avg_times[5] as f64 / opts.num as f64);
-        println!("Max: {} ms", avg_times[6] as f64 / opts.num as f64);
-    }
+    println!("\nAverage times:");
+    println!("Min: {} ms", avg_times[0] as f64 / opts.num as f64);
+    println!("50%: {} ms", avg_times[1] as f64 / opts.num as f64);
+    println!("80%: {} ms", avg_times[2] as f64 / opts.num as f64);
+    println!("90%: {} ms", avg_times[3] as f64 / opts.num as f64);
+    println!("95%: {} ms", avg_times[4] as f64 / opts.num as f64);
+    println!("99%: {} ms", avg_times[5] as f64 / opts.num as f64);
+    println!("Max: {} ms", avg_times[6] as f64 / opts.num as f64);
 }
 
 const TEXT: &'static [u8] = b"Hello";
