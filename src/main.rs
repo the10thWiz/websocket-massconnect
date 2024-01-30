@@ -1,7 +1,13 @@
-use std::{io::{Error, ErrorKind}, sync::mpsc, thread, time::{Duration, Instant}};
+use std::{
+    io::{Error, ErrorKind},
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant}, num::NonZeroUsize,
+};
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
+use rand::Rng;
 use tokio::runtime::Builder;
 use websocket_lite::{ClientBuilder, Message, Opcode, Result};
 
@@ -16,7 +22,10 @@ struct Options {
     address: String,
     #[structopt(short, long, default_value = "1000")]
     /// Maximum number of connections
-    max: usize,
+    connections: usize,
+    #[structopt(short, long, default_value = "1")]
+    /// Maximum number of connections
+    messages: usize,
     #[structopt(short, long, default_value = "8")]
     /// How many threads to utilize for connecting
     threads: usize,
@@ -30,8 +39,11 @@ struct Options {
     /// Just do HTTP requests
     http: bool,
     #[structopt(short, long)]
-    /// Enable stress mode, which disables statistics and the 2 second pause between iterations
+    /// Enable stress mode, which disables the 2 second pause between iterations
     stress: bool,
+    #[structopt(short, long)]
+    /// Sets randomization to vary the exact number of connection and messages
+    randomization: Option<NonZeroUsize>,
 }
 
 #[derive(Debug, Default)]
@@ -47,55 +59,75 @@ fn main() {
     let address: &'static str = Box::leak(opts.address.into_boxed_str());
     let auth = opts.auth;
     let http = opts.http;
+    let messages = opts.messages;
+    let randomization = opts.randomization;
+
+    let mut rng = rand::thread_rng();
 
     let mut avg_times = [0; 7];
     for run in 0..opts.num {
         let start = Instant::now();
         let (tx, rx) = mpsc::channel();
 
-        let num = opts.max / opts.threads;
-        opts.max = num * opts.threads;
+        let num = opts.connections / opts.threads + opts.randomization.map_or(0, |r| rng.gen_range(0, r.get()));
         let mut rets = Vec::with_capacity(opts.threads);
         for _ in 0..opts.threads {
             let tx_inner = tx.clone();
-            rets.push(thread::spawn(move || Builder::new_current_thread().enable_all().build().unwrap().block_on(async move {
-                let mut ret = Vec::with_capacity(num);
-                let local = tokio::task::LocalSet::new();
-                let start = Instant::now();
-                for _ in 0..num {
-                    ret.push(local.spawn_local(try_connect(address, auth, http, client)));
-                }
-                local.await;
-                let time = start.elapsed();
-                for c in ret {
-                    match c.await {
-                        Ok(Ok(duration)) => {
-                            let _ = tx_inner.send(ClientConnection {
-                                success: true,
-                                time: duration,
-                            });
-                        },
-                        Ok(Err(e)) => {
-                            let _ = tx_inner.send(ClientConnection {
-                                success: false,
-                                time: Duration::from_secs(0),
-                            });
-                            println!("Error: {:?}", e)
-                        },
-                        Err(e) => {
-                            let _ = tx_inner.send(ClientConnection {
-                                success: false,
-                                time: Duration::from_secs(0),
-                            });
-                            println!("Join Error: {:?}", e)
-                        },
-                    }
-                }
-                time
-            })));
+            rets.push(thread::spawn(move || {
+                Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async move {
+                        let mut ret = Vec::with_capacity(num);
+                        let local = tokio::task::LocalSet::new();
+                        let start = Instant::now();
+                        for _ in 0..num {
+                            ret.push(local.spawn_local(try_connect(
+                                address,
+                                auth,
+                                http,
+                                client,
+                                messages + randomization.map_or(0, |r| rand::thread_rng().gen_range(0, r.get())),
+                            )));
+                        }
+                        local.await;
+                        let time = start.elapsed();
+                        for c in ret {
+                            match c.await {
+                                Ok(Ok(duration)) => {
+                                    let _ = tx_inner.send(ClientConnection {
+                                        success: true,
+                                        time: duration,
+                                    });
+                                }
+                                Ok(Err(e)) => {
+                                    let _ = tx_inner.send(ClientConnection {
+                                        success: false,
+                                        time: Duration::from_secs(0),
+                                    });
+                                    println!("Error: {:?}", e)
+                                }
+                                Err(e) => {
+                                    let _ = tx_inner.send(ClientConnection {
+                                        success: false,
+                                        time: Duration::from_secs(0),
+                                    });
+                                    println!("Join Error: {:?}", e)
+                                }
+                            }
+                        }
+                        time
+                    })
+            }));
         }
-        percentiles(rx, opts.max, &mut avg_times);
-        println!("Run {} of {} took: {}s", run + 1, opts.num, start.elapsed().as_secs_f64());
+        percentiles(rx, num * opts.threads, &mut avg_times);
+        println!(
+            "Run {} of {} took: {}s",
+            run + 1,
+            opts.num,
+            start.elapsed().as_secs_f64()
+        );
         if !opts.stress {
             std::thread::sleep(Duration::from_secs(2));
         }
@@ -118,6 +150,7 @@ async fn try_connect(
     auth: bool,
     http: bool,
     client: &reqwest::Client,
+    messages: usize,
 ) -> Result<Duration> {
     let start = Instant::now();
     if http {
@@ -126,23 +159,30 @@ async fn try_connect(
         }
     } else {
         let builder = if auth {
-            let res = client.get(address)
-                .send()
-                .await?
-                .text()
-                .await?;
+            let res = client.get(address).send().await?.text().await?;
             ClientBuilder::new(&format!("ws://localhost:8000{}", res))?
         } else {
             ClientBuilder::new(address)?
         };
         let mut client = builder.async_connect_insecure().await?;
-        client.
-            send(Message::new(Opcode::Text, Bytes::from_static(TEXT))?).await?;
-        let (response, _client) = client.into_future().await;
-        if let Some(Ok(response)) = response {
-            if response.into_data() == TEXT {
-                return Ok(start.elapsed());
+        let mut issue = false;
+        for _ in 0..messages {
+            client
+                .send(Message::new(Opcode::Text, Bytes::from_static(TEXT))?)
+                .await?;
+            let response = client.next().await;
+            if let Some(Ok(response)) = response {
+                if response.into_data() != TEXT {
+                    issue = true;
+                    break;
+                }
+            } else {
+                issue = true;
+                break;
             }
+        }
+        if !issue {
+            return Ok(start.elapsed());
         }
     }
     Err(Box::new(Error::new(ErrorKind::Other, "Failed")))
